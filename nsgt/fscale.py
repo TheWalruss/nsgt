@@ -119,6 +119,87 @@ def mel2hz(m):
     return (np.power(10.,m/2595.)-1.)*700.
 
 
+class VarQScale(Scale):
+    """
+    Variable Q-factor logarithmic frequency scale.
+
+    Concatenates multiple log-scale zones with different bins-per-octave (BPO),
+    so that time resolution adapts with frequency:
+
+    * Low frequencies (bass drum territory) get a small BPO → short windows →
+      good temporal precision at the cost of some frequency resolution.
+    * High frequencies (fingerstyle, transient detail) get a large BPO → the
+      window is already short at those frequencies so the high BPO is free.
+
+    The Q-factor within each zone is derived from its BPO exactly as LogScale
+    does: ``Q = √(2^(1/bpo)) / (2^(1/bpo) − 1) / 2``.
+
+    Parameters
+    ----------
+    fmin : float
+        Minimum centre frequency (Hz).
+    fmax : float
+        Maximum centre frequency (Hz).
+    zones : sequence of (upper_freq_hz, bpo) pairs
+        Each pair defines the upper bound and BPO for one zone.  The first
+        zone starts at *fmin*; subsequent zones start where the previous one
+        ended.  The last zone should cover up to *fmax*.  Default zones give
+        roughly ERB-like coverage::
+
+            (   80 Hz,  4 bpo)  → Q ≈  2.9,  window ≈ 18 ms at 40 Hz
+            (  320 Hz,  8 bpo)  → Q ≈  5.7,  window ≈  9 ms at 160 Hz
+            ( 2000 Hz, 24 bpo)  → Q ≈ 17.3,  window ≈  2 ms at 1 kHz
+            (16000 Hz, 38 bpo)  → Q ≈ 27.3,  window ≈  1 ms at 8 kHz
+    """
+
+    DEFAULT_ZONES = (
+        (   80.0,  4),
+        (  320.0,  8),
+        ( 2000.0, 24),
+        (16000.0, 38),
+    )
+
+    def __init__(self, fmin, fmax, zones=None):
+        if zones is None:
+            zones = self.DEFAULT_ZONES
+
+        all_freqs = []
+        all_qs    = []
+        lo        = float(fmin)
+        fmax      = float(fmax)
+
+        for (hi, bpo) in zones:
+            hi = min(float(hi), fmax)
+            if lo >= fmax:
+                break
+            pow2n  = 2.0 ** (1.0 / bpo)
+            q_zone = np.sqrt(pow2n) / (pow2n - 1.0) / 2.0
+            # Number of bins to reach hi from lo at this BPO
+            n = max(1, int(np.ceil(np.log2(hi / lo) * bpo)))
+            for i in range(n):
+                f = lo * 2.0 ** (float(i) / bpo)
+                if f >= fmax:
+                    break
+                all_freqs.append(f)
+                all_qs.append(q_zone)
+            # Advance lo to the true endpoint of this zone's last bin
+            lo = lo * 2.0 ** (float(n) / bpo)
+
+        self._freqs = np.array(all_freqs, dtype=float)
+        self._qs    = np.array(all_qs,    dtype=float)
+        Scale.__init__(self, len(self._freqs))
+
+    def F(self, bnd=None):
+        if bnd is None:
+            bnd = np.arange(self.bnds)
+        return self._freqs[bnd]
+
+    def Q(self, bnd=None):
+        if bnd is None:
+            bnd = np.arange(self.bnds)
+        return self._qs[bnd]
+
+
 class MelScale(Scale):
     def __init__(self, fmin, fmax, bnds, beyond=0):
         """
